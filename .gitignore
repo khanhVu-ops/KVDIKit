@@ -1,0 +1,8 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+# Anchored patterns only match at the repo root, and an example project lives a
+# level down — match the user-state directories wherever they turn up instead.
+xcuserdata/
+*.xcuserstate

@@ -1,0 +1,28 @@
+name: KVDIKitExample
+options:
+  bundleIdPrefix: com.varmeta.kvdi
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+packages:
+  KVDIKit:
+    path: ../
+
+targets:
+  KVDIKitExample:
+    type: application
+    platform: iOS
+    sources:
+      - KVDIKitExample
+    dependencies:
+      - package: KVDIKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.varmeta.kvdi.example
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
