@@ -24,6 +24,18 @@ let package = Package(
             name: "KVDIKitTests",
             dependencies: ["KVDIKit"],
             path: "Tests/KVDIKitTests"
+        ),
+        // Built the way a new Xcode 26 app target is: default MainActor isolation.
+        // Compiling at all is most of what this target tests.
+        .testTarget(
+            name: "KVDIKitMainActorTests",
+            dependencies: ["KVDIKit"],
+            path: "Tests/KVDIKitMainActorTests",
+            swiftSettings: [
+                .defaultIsolation(MainActor.self),
+                .enableUpcomingFeature("InferIsolatedConformances"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
         )
     ],
     swiftLanguageModes: [.v6]
