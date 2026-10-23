@@ -38,7 +38,10 @@ public struct KVDependencyValues: Sendable {
     /// Read or override the value for `key`.
     public subscript<Key: KVDependencyKey>(key: Key.Type) -> Key.Value {
         get {
-            if let overridden = overrides[ObjectIdentifier(key)] as? Key.Value {
+            // Unwrap the dictionary lookup before casting: when `Key.Value` is itself an
+            // Optional, casting a missing entry (`nil`) to it succeeds as `.some(nil)`, and
+            // every un-overridden Optional key would resolve to `nil` without reaching its key.
+            if let stored = overrides[ObjectIdentifier(key)], let overridden = stored as? Key.Value {
                 return overridden
             }
             return Key.value(for: context)

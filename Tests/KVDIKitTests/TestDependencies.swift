@@ -61,6 +61,20 @@ extension KVDependencyValues {
         get { self[UserStoreKey.self] }
         set { self[UserStoreKey.self] = newValue }
     }
+
+    var optionalGreeter: Greeter? {
+        get { self[OptionalGreeterKey.self] }
+        set { self[OptionalGreeterKey.self] = newValue }
+    }
+}
+
+// MARK: - An Optional dependency
+
+/// "Feature off" modelled as `nil`: the key's own values are non-nil, so a `nil` read
+/// can only come from an explicit override.
+enum OptionalGreeterKey: KVDependencyKey {
+    static let liveValue: Greeter? = .live
+    static let testValue: Greeter? = .test
 }
 
 // MARK: - Consumers

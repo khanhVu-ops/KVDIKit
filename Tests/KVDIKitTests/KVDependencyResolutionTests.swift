@@ -48,6 +48,20 @@ final class KVDependencyResolutionTests: XCTestCase {
 
     // MARK: - Missing testValue
 
+    func testOptionalKeyResolvesThroughTheKeyWhenNotOverridden() {
+        let values = KVDependencyValues(context: .live)
+        XCTAssertEqual(values.optionalGreeter?.greet("kv"), "live:kv")
+    }
+
+    func testOptionalKeyCanBeOverriddenToNil() {
+        var values = KVDependencyValues(context: .live)
+        values.optionalGreeter = nil
+        XCTAssertNil(values.optionalGreeter)
+
+        values.optionalGreeter = .shouting
+        XCTAssertEqual(values.optionalGreeter?.greet("kv"), "SHOUT:KV")
+    }
+
     func testMissingTestValueWarnsOnceAndFallsBack() {
         let reported = KVLocked<[String]>([])
         let original = KVIssueReporter.handler
