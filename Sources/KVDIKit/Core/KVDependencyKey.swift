@@ -29,6 +29,10 @@ import Foundation
 /// `Value` must be `Sendable` — dependencies are resolved from any isolation domain.
 /// In practice that means a struct of closures (the `AuthClient.live` shape above),
 /// an `actor`, or a `@MainActor` class; all three satisfy it without ceremony.
+///
+/// In a target built with default `MainActor` isolation, declare keys (and their
+/// `KVDependencyValues` extension) `nonisolated` — see "Default MainActor isolation"
+/// in the README.
 public protocol KVDependencyKey {
 
     /// The dependency itself. A protocol existential works, but a struct of closures
@@ -41,8 +45,31 @@ public protocol KVDependencyKey {
     /// Used inside Xcode previews. Defaults to ``liveValue``.
     static var previewValue: Value { get }
 
-    /// Used inside tests. Defaults to ``previewValue``, with a warning — see below.
+    /// Used inside tests. Defaults to ``previewValue``, and reports the key as
+    /// unstubbed according to ``KVDependencies/testValuePolicy``.
+    ///
+    /// A key whose live value is genuinely safe in tests (a pure formatter, a clock
+    /// wrapper you never stub) can say so and stay quiet under either policy:
+    ///
+    /// ```swift
+    /// static var testValue: Value { liveValue }
+    /// ```
     static var testValue: Value { get }
+}
+
+/// What happens when a test resolves a key that declares no `testValue`.
+///
+/// Set with ``KVDependencies/testValuePolicy``.
+public enum KVTestValuePolicy: Sendable, Hashable, CaseIterable {
+
+    /// Report a runtime issue through ``KVIssueReporter/handler``, once per key, and
+    /// carry on with the live value. The default — this is how 1.0 behaved.
+    case warn
+
+    /// Fail the running test through ``KVIssueReporter/failureHandler`` on *every*
+    /// access, then carry on with the live value. Use it to make an unstubbed
+    /// dependency impossible to miss.
+    case fail
 }
 
 public extension KVDependencyKey {
@@ -50,14 +77,18 @@ public extension KVDependencyKey {
     static var previewValue: Value { liveValue }
 
     static var testValue: Value {
-        KVIssueReporter.reportOnce(
-            id: String(reflecting: Self.self),
+        let key = String(reflecting: Self.self)
+        let message = """
+            KVDIKit: "\(key)" has no testValue, so a test just resolved its live value. \
+            Add `static let testValue` to the key, or override it for this test with \
+            `withKVDependencies { $0.… = … }`.
             """
-            KVDIKit: "\(String(reflecting: Self.self))" has no testValue, so a test just \
-            resolved its live value. Add `static let testValue` to the key, or override it \
-            for this test with `withKVDependencies { $0.… = … }`.
-            """
-        )
+        switch KVDependencies.testValuePolicy {
+        case .warn:
+            KVIssueReporter.reportOnce(id: key, message)
+        case .fail:
+            KVIssueReporter.fail(message)
+        }
         return previewValue
     }
 

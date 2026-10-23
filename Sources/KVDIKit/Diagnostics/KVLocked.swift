@@ -27,3 +27,27 @@ final class KVLocked<Value>: @unchecked Sendable {
         return try body(&value)
     }
 }
+
+/// Serialises the calls that run caller code — `prepare` and `startSession` — without
+/// holding ``KVLocked`` while that code runs.
+///
+/// Recursive on purpose: caller code may itself call `prepare` or `startSession`,
+/// and a plain lock would hang the app there instead of letting the call through and
+/// reporting it. Reads never take this lock, so resolving a dependency from inside
+/// the caller's closure is always safe.
+final class KVWriterGate: @unchecked Sendable {
+
+    private let lock = NSRecursiveLock()
+    /// Only touched while `lock` is held, and only by the thread holding it.
+    private var depth = 0
+
+    /// Run `body` exclusively. `isNested` is `true` when the calling thread is already
+    /// inside another `run`.
+    func run<Result>(_ body: (_ isNested: Bool) throws -> Result) rethrows -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        depth += 1
+        defer { depth -= 1 }
+        return try body(depth > 1)
+    }
+}

@@ -14,7 +14,7 @@ Dependency injection for SwiftUI apps — iOS 16+, zero dependencies.
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/khanhVu-ops/KVDIKit.git", from: "1.0.0")
+    .package(url: "https://github.com/khanhVu-ops/KVDIKit.git", from: "1.1.0")
 ]
 ```
 
@@ -110,6 +110,12 @@ The closure starts from the app layer, so a session dependency can wrap the one 
 replaces (`wrapping: values.apiClient` above). Calling `startSession` while a session
 is open replaces it — that's the account-switch path.
 
+The closures passed to `startSession` and `prepare` may resolve dependencies — build
+an object whose `init` reads `@KVDependency`, call `KVDependencies.current`, touch a key
+whose `liveValue` reads another key. Such reads see the layers as they were *before*
+the call; everything the closure sets is published in one step when it returns. (1.0.0
+held a lock while the closure ran, so any of these hung the app.)
+
 Objects that already exist pick the change up, because `@KVDependency` resolves on
 read rather than at `init`. To react to the boundary itself:
 
@@ -118,6 +124,18 @@ for await session in KVDependencies.sessionChanges {
     if session == nil { router.popToRoot() }
 }
 ```
+
+`sessionChanges` delivers boundaries only. A subscriber that should also hear the state
+in force *right now* — say, a view model created mid-session — asks for it:
+
+```swift
+for await session in KVDependencies.sessionChanges(includingCurrent: true) {
+    isSignedIn = session != nil      // runs once immediately, then at every boundary
+}
+```
+
+Reading the current state and subscribing happen atomically, so no boundary is missed
+or delivered twice. `KVDependencies.sessionID` reads the current state without a stream.
 
 ### Scope
 
@@ -155,11 +173,45 @@ enum AnalyticsKey: KVDependencyKey {
 }
 ```
 
-The context is detected from the process — XCTest gives `.test`, an Xcode preview
-gives `.preview`. A key with **no** `testValue` still resolves in tests, but logs a
-runtime issue the first time, so an unstubbed dependency shows up as a purple
-warning in Xcode instead of quietly hitting the network. Route those elsewhere with
-`KVIssueReporter.handler`.
+The context is detected from the process — XCTest or Swift Testing gives `.test`
+(under Xcode and under `swift test`), an Xcode preview gives `.preview`. To skip
+detection, set `KVDI_CONTEXT` to `live`, `preview` or `test` in the scheme's
+environment — handy for UI tests that should run against live values.
+
+### Keys without a `testValue`
+
+A key with **no** `testValue` still resolves in tests, falling back to its live value.
+What else happens is up to `KVDependencies.testValuePolicy`:
+
+| Policy | On access | |
+|---|---|---|
+| `.warn` *(default)* | logs a runtime issue through `KVIssueReporter.handler`, once per key | the 1.0 behaviour |
+| `.fail` | fails the running test through `KVIssueReporter.failureHandler`, every access | so the test that hit it fails |
+
+Opt into `.fail` once, before any test runs:
+
+```swift
+final class MyAppTests: XCTestCase {
+    override class func setUp() {
+        super.setUp()
+        KVDependencies.testValuePolicy = .fail
+    }
+}
+```
+
+The default `failureHandler` calls `XCTFail`. Under Swift Testing, point it at the
+running test instead:
+
+```swift
+KVIssueReporter.failureHandler = { Issue.record(Comment(rawValue: $0)) }
+```
+
+A key whose live value is genuinely safe in tests (a formatter, a UUID generator you
+never stub) says so, and is never reported:
+
+```swift
+static var testValue: Value { liveValue }
+```
 
 ## SwiftUI
 
@@ -181,6 +233,54 @@ struct FeatureFlagBadge: View {
 ```
 
 Elsewhere, prefer keeping dependencies in the model and passing the model to the view.
+
+## Default MainActor isolation (Xcode 26)
+
+New Xcode 26 app targets build with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, which
+makes every declaration in the app `@MainActor` unless it says otherwise. Dependencies
+resolve from any isolation domain, so the key and its `KVDependencyValues` extension
+must opt out — mark both `nonisolated`:
+
+```swift
+nonisolated enum AuthClientKey: KVDependencyKey {
+    static let liveValue = AuthClient.live
+    static let testValue = AuthClient.mock
+}
+
+nonisolated extension KVDependencyValues {
+    var authClient: AuthClient {
+        get { self[AuthClientKey.self] }
+        set { self[AuthClientKey.self] = newValue }
+    }
+}
+```
+
+What each `nonisolated` prevents:
+
+| Left off | Error |
+|---|---|
+| on the extension | `type 'WritableKeyPath<KVDependencyValues, AuthClient>' does not conform to the 'Sendable' protocol` at `@KVDependency(\.authClient)` — a key path to a main actor-isolated property cannot cross isolation domains |
+| on the key | `main actor-isolated conformance of 'AuthClientKey' to 'KVDependencyKey' cannot be used in nonisolated context` inside the extension |
+
+One `nonisolated extension KVDependencyValues { … }` can hold every property in a file.
+The package cannot add these for you: they are on your declarations, and the default
+isolation is a setting of your target.
+
+If the value's type is declared in the same target, it is `@MainActor` too, and a
+`static let` on it (`AuthClient.live` above) is main actor-isolated — which the
+nonisolated key cannot read (*"main actor-isolated default value in a nonisolated
+context"*). Either build the value inline in the key
+(`static let liveValue = AuthClient { … }`) or mark the value type `nonisolated`:
+
+```swift
+nonisolated struct AuthClient: Sendable {
+    var signIn: @Sendable (String, String) async throws -> User
+    static let live = AuthClient { … }
+}
+```
+
+A `@MainActor` class works as a value as-is (it is `Sendable`), as long as its `init`
+is callable from a nonisolated context.
 
 ## Example app
 
@@ -207,6 +307,12 @@ cd KVDIKitExample && xcodegen generate && open KVDIKitExample.xcodeproj
   the libraries is what lets them stay usable on their own.
 - **`prepare(_:)` is a launch-time call.** Changing the app layer while a session is
   open does not reach the session layer, and says so.
+- **Don't nest `prepare` / `startSession`.** Calling one from inside the other's closure
+  no longer hangs, but the outer call publishes its own copy when it returns, replacing
+  what the inner call set — and says so. Set the value on the outer closure's `values`.
+- **Don't block a `prepare` / `startSession` closure on another thread that calls
+  `prepare` or `startSession`.** Those calls are serialised, so that would wait forever.
+  Resolving dependencies from any thread is always fine.
 
 ## License
 

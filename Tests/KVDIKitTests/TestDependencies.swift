@@ -30,14 +30,47 @@ enum UnstubbedGreeterKey: KVDependencyKey {
     static let liveValue = Greeter.live
 }
 
+/// A key whose value is built from another dependency the first time it is touched —
+/// the shape that must not deadlock when first resolved inside `startSession`.
+/// Only `testLazyLiveValueThatResolvesAnotherKeyInsideStartSession` reads it, so the
+/// lazy initialiser really does run inside that test's closure.
+enum ChainedKey: KVDependencyKey {
+    static let liveValue: Greeter = {
+        let base = KVDependencies.current.greeter
+        return Greeter { "chained(\(base.greet($0)))" }
+    }()
+    static var testValue: Greeter { liveValue }
+}
+
+/// Declares that its live value is fine in tests — no report under either policy.
+enum LiveInTestsKey: KVDependencyKey {
+    static let liveValue = Greeter.live
+    static var testValue: Greeter { liveValue }
+}
+
 // MARK: - A reference-type dependency
 
 /// Stands in for a per-user store: created at sign-in, expected to die at sign-out.
-final class UserStore: @unchecked Sendable {
+class UserStore: @unchecked Sendable {
     let userID: String
 
     init(userID: String) {
         self.userID = userID
+    }
+}
+
+/// A per-user store that flushes through another dependency when it is released —
+/// its `deinit` runs while `endSession()` drops the session.
+final class FlushingUserStore: UserStore, @unchecked Sendable {
+    let onFlush: @Sendable (String) -> Void
+
+    init(userID: String, onFlush: @escaping @Sendable (String) -> Void) {
+        self.onFlush = onFlush
+        super.init(userID: userID)
+    }
+
+    deinit {
+        onFlush(KVDependencies.current.greeter.greet(userID))
     }
 }
 
@@ -55,6 +88,16 @@ extension KVDependencyValues {
     var unstubbedGreeter: Greeter {
         get { self[UnstubbedGreeterKey.self] }
         set { self[UnstubbedGreeterKey.self] = newValue }
+    }
+
+    var chained: Greeter {
+        get { self[ChainedKey.self] }
+        set { self[ChainedKey.self] = newValue }
+    }
+
+    var liveInTests: Greeter {
+        get { self[LiveInTestsKey.self] }
+        set { self[LiveInTestsKey.self] = newValue }
     }
 
     var userStore: UserStore {

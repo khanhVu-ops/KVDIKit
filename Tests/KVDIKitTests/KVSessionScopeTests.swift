@@ -123,4 +123,36 @@ final class KVSessionScopeTests: XCTestCase {
         XCTAssertNotNil(closed, "the stream should yield on sign-out, not finish")
         XCTAssertNil(closed ?? nil, "sign-out yields nil")
     }
+
+    func testSessionChangesWithoutReplayStillSkipsTheCurrentState() async {
+        let id = KVDependencies.startSession { $0.userStore = UserStore(userID: "u1") }
+        var iterator = KVDependencies.sessionChanges.makeAsyncIterator()
+
+        KVDependencies.endSession()
+        let first = await iterator.next()
+        XCTAssertNotEqual(first ?? nil, id, "the plain stream does not replay the open session")
+        XCTAssertNil(first ?? nil)
+    }
+
+    func testSessionChangesCanStartWithTheCurrentSession() async {
+        let id = KVDependencies.startSession { $0.userStore = UserStore(userID: "u1") }
+        var iterator = KVDependencies.sessionChanges(includingCurrent: true).makeAsyncIterator()
+
+        let current = await iterator.next()
+        XCTAssertEqual(current, id, "a late subscriber hears the session already open")
+
+        KVDependencies.endSession()
+        let closed = await iterator.next()
+        XCTAssertEqual(closed, .some(nil))
+    }
+
+    func testSessionChangesReplaysSignedOutAsNil() async {
+        var iterator = KVDependencies.sessionChanges(includingCurrent: true).makeAsyncIterator()
+        let current = await iterator.next()
+        XCTAssertEqual(current, .some(nil))
+
+        let id = KVDependencies.startSession { $0.userStore = UserStore(userID: "u1") }
+        let opened = await iterator.next()
+        XCTAssertEqual(opened, id)
+    }
 }

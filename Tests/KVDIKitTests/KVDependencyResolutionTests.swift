@@ -81,6 +81,94 @@ final class KVDependencyResolutionTests: XCTestCase {
         XCTAssertTrue(messages[0].contains("UnstubbedGreeterKey"))
     }
 
+    func testWarnIsTheDefaultPolicy() {
+        XCTAssertEqual(KVDependencies.testValuePolicy, .warn)
+    }
+
+    func testFailPolicyReportsEveryAccessAsAFailure() {
+        let warnings = KVLocked<[String]>([])
+        let failures = KVLocked<[String]>([])
+        let originalHandler = KVIssueReporter.handler
+        let originalFailureHandler = KVIssueReporter.failureHandler
+        KVIssueReporter.handler = { message in warnings.withLock { $0.append(message) } }
+        KVIssueReporter.failureHandler = { message in failures.withLock { $0.append(message) } }
+        KVDependencies.testValuePolicy = .fail
+        defer {
+            KVIssueReporter.handler = originalHandler
+            KVIssueReporter.failureHandler = originalFailureHandler
+            KVDependencies.testValuePolicy = .warn
+        }
+
+        let values = KVDependencyValues(context: .test)
+        XCTAssertEqual(values.unstubbedGreeter.greet("kv"), "live:kv", "still falls back")
+        XCTAssertEqual(values.unstubbedGreeter.greet("kv"), "live:kv")
+
+        let messages = failures.withLock { $0 }
+        XCTAssertEqual(messages.count, 2, "every access fails, so every test that touches it fails")
+        XCTAssertTrue(messages.allSatisfy { $0.contains("UnstubbedGreeterKey") })
+        XCTAssertTrue(warnings.withLock { $0 }.isEmpty, "failures do not also go to the warning handler")
+    }
+
+    func testFailPolicyIgnoresKeysWithATestValueAndOverriddenKeys() {
+        let failures = KVLocked<[String]>([])
+        let original = KVIssueReporter.failureHandler
+        KVIssueReporter.failureHandler = { message in failures.withLock { $0.append(message) } }
+        KVDependencies.testValuePolicy = .fail
+        defer {
+            KVIssueReporter.failureHandler = original
+            KVDependencies.testValuePolicy = .warn
+        }
+
+        var values = KVDependencyValues(context: .test)
+        _ = values.greeter
+        XCTAssertEqual(values.liveInTests.greet("kv"), "live:kv", "`testValue { liveValue }` opts out")
+        values.unstubbedGreeter = .shouting
+        XCTAssertEqual(values.unstubbedGreeter.greet("kv"), "SHOUT:KV")
+
+        XCTAssertTrue(failures.withLock { $0 }.isEmpty)
+    }
+
+    func testDefaultFailureHandlerFailsTheRunningXCTest() {
+        KVDependencies.testValuePolicy = .fail
+        defer { KVDependencies.testValuePolicy = .warn }
+
+        XCTExpectFailure("an unstubbed key under .fail must fail the test") {
+            _ = KVDependencyValues(context: .test).unstubbedGreeter
+        }
+    }
+
+    // MARK: - Context detection
+
+    func testDetectionRecognisesTestRunners() {
+        func detect(_ environment: [String: String] = [:], _ arguments: [String] = ["/bin/App"], loaded: Bool = false) -> KVDependencyContext {
+            KVDependencyContext.detect(environment: environment, arguments: arguments, isTestFrameworkLoaded: loaded)
+        }
+
+        XCTAssertEqual(detect(), .live)
+        XCTAssertEqual(detect(["XCTestConfigurationFilePath": "/tmp/x.xctestconfiguration"]), .test)
+        XCTAssertEqual(detect(["XCTestBundlePath": "/tmp/Foo.xctest"]), .test)
+        XCTAssertEqual(detect(["XCTestSessionIdentifier": "abc"]), .test)
+        XCTAssertEqual(detect([:], ["/usr/bin/xctest", "/build/FooPackageTests.xctest"]), .test)
+        XCTAssertEqual(
+            detect([:], ["/usr/bin/swiftpm-testing-helper", "--test-bundle-path", "/build/Foo.xctest/Contents/MacOS/Foo"]),
+            .test,
+            "swift test running Swift Testing"
+        )
+        XCTAssertEqual(detect([:], ["/usr/bin/swiftpm-testing-helper"]), .test)
+        XCTAssertEqual(detect(loaded: true), .test, "XCTest or Swift Testing loaded in-process")
+        XCTAssertEqual(detect(["XCODE_RUNNING_FOR_PREVIEWS": "1"]), .preview)
+    }
+
+    func testDetectionHonoursTheExplicitOverride() {
+        func detect(_ environment: [String: String]) -> KVDependencyContext {
+            KVDependencyContext.detect(environment: environment, arguments: ["/usr/bin/xctest"], isTestFrameworkLoaded: true)
+        }
+
+        XCTAssertEqual(detect(["KVDI_CONTEXT": "live", "XCTestConfigurationFilePath": "/tmp/x"]), .live)
+        XCTAssertEqual(detect(["KVDI_CONTEXT": "Preview"]), .preview, "case-insensitive")
+        XCTAssertEqual(detect(["KVDI_CONTEXT": "nonsense"]), .test, "an unknown value falls back to detection")
+    }
+
     // MARK: - Scopes
 
     func testScopeOverridesForTheDurationOfTheOperation() {
